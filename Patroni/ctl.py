@@ -2655,3 +2655,44 @@ def remove_nodes_from_domain(cluster_name: Optional[str], domain_name: str, node
         click.echo(f'Nodes {to_remove} removed from domain "{domain_name}" successfully')
     else:
         click.echo('Failed to update configuration - someone else modified it')
+
+
+@ctl.command('set-remote-sync-replicas', help='Set the number of remote sync replicas (minimum 0)')
+@option_citus_group
+@click.argument('num', type=int)
+@arg_cluster_name
+@option_force
+def set_remote_sync_replicas(group: Optional[int], num: int, cluster_name: Optional[str], force: bool) -> None:
+    """
+    Set the number of remote sync replicas for a cluster.
+    """
+    if not cluster_name:
+        config = _get_configuration()
+        cluster_name = config.get('scope')
+        if not cluster_name:
+            raise PatroniCtlException('cluster_name is required. Either provide it as an argument or set it in the configuration file as "scope"')
+    
+    if num < 0:
+        click.echo("Error: number of remote replicas cannot be less than 0")
+        return
+
+    dcs = get_dcs(cluster_name, group)
+    cluster = dcs.get_cluster()
+    
+    if not cluster.config:
+        raise PatroniCtlException('The config key does not exist in the cluster {0}'.format(cluster_name))
+    
+    if not cluster.config.data.get('use_remote_sync', False):
+        click.echo("Error: Remote sync is not enabled for this cluster")
+        return
+    
+    config_data = cluster.config.data.copy()
+    config_data['num_of_remote_sync_replicas'] = num
+
+    if not force and not click.confirm(f'Are you sure you want to set number of remote replicas to {num} for cluster "{cluster_name}"?'):
+        return
+
+    if dcs.set_config_value(json.dumps(config_data, separators=(',', ':')), cluster.config.version):
+        click.echo(f"Number of remote replicas set to {num} for cluster '{cluster_name}'")
+    else:
+        click.echo('Failed to update configuration - someone else modified it')
