@@ -1,0 +1,25 @@
+plugins {
+    id 'org.jetbrains.kotlin.jvm'
+}
+
+group = 'dev.milan'
+version = '0.0.1'
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    testImplementation 'org.jetbrains.kotlin:kotlin-test'
+
+    implementation("com.charleskorn.kaml:kaml:0.104.0")
+
+}
+
+kotlin {
+    jvmToolchain(17)
+}
+
+test {
+    useJUnitPlatform()
+}

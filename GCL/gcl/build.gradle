@@ -1,0 +1,55 @@
+plugins {
+    id 'org.jetbrains.kotlin.jvm'
+    id("com.gradleup.shadow") version "9.3.1"
+
+}
+
+group = 'dev.milan'
+version = '0.0.1'
+
+repositories {
+    mavenCentral()
+}
+
+
+dependencies {
+    implementation(project(":shared"))
+
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.0")
+
+    implementation("org.apache.ratis:ratis-server:3.2.1")
+    implementation("org.apache.ratis:ratis-client:3.2.1")
+    implementation("org.apache.ratis:ratis-common:3.2.1")
+    implementation("org.apache.ratis:ratis-grpc:3.2.1")
+    implementation("org.apache.ratis:ratis-metrics-default:3.2.1")
+
+    implementation("org.slf4j:slf4j-simple:2.0.17")
+
+    implementation("com.github.docker-java:docker-java:3.7.0")
+    implementation("com.github.docker-java:docker-java-transport-okhttp:3.7.0")
+
+    implementation("org.yaml:snakeyaml:2.5")
+    implementation("com.charleskorn.kaml:kaml:0.104.0")
+
+//    implementation("io.micrometer:micrometer-core:1.17.0-M1")
+//    implementation("io.micrometer:micrometer-registry-prometheus:1.17.0-M1")
+
+
+}
+
+kotlin {
+    jvmToolchain(17)
+}
+
+test {
+    useJUnitPlatform()
+}
+
+shadowJar{
+    archiveBaseName = "gcl_daemon"
+    archiveClassifier = ""
+    mergeServiceFiles()
+    manifest {
+        attributes["Main-Class"] = "MainKt"
+    }
+}
