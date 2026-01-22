@@ -2432,3 +2432,226 @@ def promote_cluster(cluster_name: str, force: bool) -> None:
     :param force: if ``True`` run cluster demotion without asking for confirmation.
     """
     change_cluster_role(cluster_name, force, None)
+
+
+@ctl.command('list-domains', help='List all domains and their nodes')
+@arg_cluster_name
+@option_citus_group
+def list_domains(cluster_name: Optional[str], group: Optional[int]) -> None:
+    """List all domains and their nodes."""
+    if not cluster_name:
+        config = _get_configuration()
+        cluster_name = config.get('scope')
+        if not cluster_name:
+            raise PatroniCtlException('cluster_name is required. Either provide it as an argument or set it in the configuration file as "scope"')
+    
+    cluster = get_dcs(cluster_name, group).get_cluster()
+
+    if not cluster.config or not cluster.config.data.get('use_domain_sync', False):
+        click.echo("Error: 'use_domain_sync' is not enabled for this cluster")
+        return
+    
+    if 'domains' not in cluster.config.data:
+        click.echo('No domains configured')
+        return
+    
+    domains = cluster.config.data['domains']
+    if not domains:
+        click.echo('No domains configured')
+        return
+    
+    table = PrettyTable(['Domain', 'Nodes'])
+    for domain, nodes in domains.items():
+        table.add_row([domain, ', '.join(nodes)])
+    
+    click.echo(table)
+
+
+@ctl.command('add-domain', help='Add a new domain with nodes')
+@arg_cluster_name
+@click.argument('domain_name')
+@click.argument('nodes', nargs=-1)
+@option_force
+@option_citus_group
+def add_domain(cluster_name: Optional[str], domain_name: str, nodes: List[str], force: bool, group: Optional[int]) -> None:
+    """Add a new domain with specified nodes."""
+    if not cluster_name:
+        config = _get_configuration()
+        cluster_name = config.get('scope')
+        if not cluster_name:
+            raise PatroniCtlException('cluster_name is required. Either provide it as an argument or set it in the configuration file as "scope"')
+    
+    dcs = get_dcs(cluster_name, group)
+    cluster = dcs.get_cluster()
+
+    if not cluster.config:
+        raise PatroniCtlException('The config key does not exist in the cluster {0}'.format(cluster_name))
+    
+    if not cluster.config.data.get('use_domain_sync', False):
+        click.echo("Error: 'use_domain_sync' is not enabled for this cluster")
+        return
+
+    config_data = cluster.config.data.copy()
+    if 'domains' not in config_data:
+        config_data['domains'] = {}
+    
+    config_data['domains'][domain_name] = list(nodes)
+    
+    if not force and not click.confirm(f'Add domain "{domain_name}" with nodes {list(nodes)}?'):
+        return
+    
+    if dcs.set_config_value(json.dumps(config_data, separators=(',', ':')), cluster.config.version):
+        click.echo(f'Domain "{domain_name}" added successfully')
+    else:
+        click.echo('Failed to add domain')
+
+@ctl.command('remove-domain', help='Remove a domain')
+@arg_cluster_name
+@click.argument('domain_name')
+@option_force
+@option_citus_group
+def remove_domain(cluster_name: Optional[str], domain_name: str, force: bool, group: Optional[int]) -> None:
+    """Remove a domain."""
+    if not cluster_name:
+        config = _get_configuration()
+        cluster_name = config.get('scope')
+        if not cluster_name:
+            raise PatroniCtlException('cluster_name is required. Either provide it as an argument or set it in the configuration file as "scope"')
+    
+    dcs = get_dcs(cluster_name, group)
+    cluster = dcs.get_cluster()
+    
+    if not cluster.config:
+        raise PatroniCtlException('The config key does not exist in the cluster {0}'.format(cluster_name))
+    
+    if not cluster.config.data.get('use_domain_sync', False):
+        click.echo("Error: 'use_domain_sync' is not enabled for this cluster")
+        return
+
+    config_data = cluster.config.data.copy()
+    if 'domains' not in config_data or domain_name not in config_data['domains']:
+        click.echo(f'Domain "{domain_name}" does not exist')
+        return
+    
+    if not force and not click.confirm(f'Remove domain "{domain_name}"?'):
+        return
+    
+    del config_data['domains'][domain_name]
+    
+    if dcs.set_config_value(json.dumps(config_data, separators=(',', ':')), cluster.config.version):
+        click.echo(f'Domain "{domain_name}" removed successfully')
+    else:
+        click.echo('Failed to remove domain - configuration was modified by someone else')
+
+
+@ctl.command('add-nodes-to-domain', help='Add one or more nodes to an existing domain')
+@arg_cluster_name
+@click.argument('domain_name')
+@click.argument('nodes', nargs=-1)  # accept multiple node names
+@option_force
+@option_citus_group
+def add_nodes_to_domain(cluster_name: Optional[str], domain_name: str, nodes: List[str], force: bool, group: Optional[int]) -> None:
+    """Add one or more nodes to an existing domain."""
+    if not cluster_name:
+        config = _get_configuration()
+        cluster_name = config.get('scope')
+        if not cluster_name:
+            raise PatroniCtlException('cluster_name is required. Either provide it as an argument or set it in the configuration file as "scope"')
+    
+    if not nodes:
+        click.echo('No nodes specified')
+        return
+
+    dcs = get_dcs(cluster_name, group)
+    cluster = dcs.get_cluster()
+
+    if not cluster.config:
+        raise PatroniCtlException(f'The config key does not exist in cluster {cluster_name}')
+    
+    if not cluster.config.data.get('use_domain_sync', False):
+        click.echo("Error: 'use_domain_sync' is not enabled for this cluster")
+        return
+
+    config_data = cluster.config.data.copy()
+    domains = config_data.setdefault('domains', {})
+
+    if domain_name not in domains:
+        click.echo(f'Domain "{domain_name}" does not exist')
+        return
+
+    existing_nodes = set(domains[domain_name])
+    new_nodes = [n for n in nodes if n not in existing_nodes]
+
+    if not new_nodes:
+        click.echo(f'All specified nodes already exist in domain "{domain_name}"')
+        return
+
+    if not force and not click.confirm(f'Add nodes {new_nodes} to domain "{domain_name}"?'):
+        return
+
+    domains[domain_name].extend(new_nodes)
+    config_data['domains'][domain_name] = sorted(set(domains[domain_name]))  # ensure uniqueness
+
+    if dcs.set_config_value(json.dumps(config_data, separators=(',', ':')), cluster.config.version):
+        click.echo(f'Nodes {new_nodes} added to domain "{domain_name}" successfully')
+    else:
+        click.echo('Failed to update configuration - someone else modified it')
+
+@ctl.command('remove-nodes-from-domain', help='Remove one or more nodes from an existing domain')
+@arg_cluster_name
+@click.argument('domain_name')
+@click.argument('nodes', nargs=-1)
+@option_force
+@option_citus_group
+def remove_nodes_from_domain(cluster_name: Optional[str], domain_name: str, nodes: List[str], force: bool, group: Optional[int]) -> None:
+    """Remove one or more nodes from an existing domain."""
+    if not cluster_name:
+        config = _get_configuration()
+        cluster_name = config.get('scope')
+        if not cluster_name:
+            raise PatroniCtlException('cluster_name is required. Either provide it as an argument or set it in the configuration file as "scope"')
+    
+    if not nodes:
+        click.echo('No nodes specified')
+        return
+
+    dcs = get_dcs(cluster_name, group)
+    cluster = dcs.get_cluster()
+
+    if not cluster.config:
+        raise PatroniCtlException(f'The config key does not exist in cluster {cluster_name}')
+
+    if not cluster.config.data.get('use_domain_sync', False):
+        click.echo("Error: 'use_domain_sync' is not enabled for this cluster")
+        return
+
+    config_data = cluster.config.data.copy()
+    domains = config_data.get('domains', {})
+
+    if domain_name not in domains:
+        click.echo(f'Domain "{domain_name}" does not exist')
+        return
+
+    existing_nodes = set(domains[domain_name])
+    to_remove = [n for n in nodes if n in existing_nodes]
+
+    if not to_remove:
+        click.echo(f'None of the specified nodes were found in domain "{domain_name}"')
+        return
+
+    if not force and not click.confirm(f'Remove nodes {to_remove} from domain "{domain_name}"?'):
+        return
+
+    domains[domain_name] = [n for n in domains[domain_name] if n not in to_remove]
+
+    # Optionally delete the domain if empty
+    if not domains[domain_name]:
+        del domains[domain_name]
+        click.echo(f'Domain "{domain_name}" removed (no nodes left)')
+    else:
+        config_data['domains'][domain_name] = domains[domain_name]
+
+    if dcs.set_config_value(json.dumps(config_data, separators=(',', ':')), cluster.config.version):
+        click.echo(f'Nodes {to_remove} removed from domain "{domain_name}" successfully')
+    else:
+        click.echo('Failed to update configuration - someone else modified it')
