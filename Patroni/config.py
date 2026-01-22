@@ -101,7 +101,9 @@ class Config(object):
             'use_slots': True,
             'parameters': CaseInsensitiveDict({p: v[0] for p, v in ConfigHandler.CMDLINE_OPTIONS.items()
                                                if v[0] is not None and p not in ('wal_keep_segments', 'wal_keep_size')})
-        }
+        },
+        'domains': dict(),
+        'use_domain_sync': False
     }
 
     def __init__(self, configfile: str,
@@ -461,7 +463,12 @@ class Config(object):
                     if name in self.__DEFAULT_CONFIG['standby_cluster']:
                         config['standby_cluster'][name] = deepcopy(value)
             elif name in config:  # only variables present in __DEFAULT_CONFIG allowed to be overridden from DCS
-                config[name] = int(value)
+                if name == 'domains':
+                    config[name] = deepcopy(value) if isinstance(value, dict) else {}
+                elif name == 'use_domain_sync':
+                    config[name] = bool(value)
+                else:
+                    config[name] = int(value)
         return config
 
     @staticmethod
