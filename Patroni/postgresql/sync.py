@@ -368,6 +368,10 @@ END;$$""")
 
         :returns: current synchronous replication state as a :class:`_SyncState` object
         """
+
+        if self.should_use_remote_sync():
+            return self.current_state_with_remote_sync(cluster)
+        
         self._handle_synchronous_standby_names_change()
 
         replica_list = _ReplicaList(self._postgresql, cluster)
@@ -434,6 +438,113 @@ END;$$""")
                         sync_confirmed.add(replica.application_name)
                     if len(active) >= sync_node_count:
                         break
+
+        return _SyncState(
+            self._ssn_data.sync_type,
+            self._ssn_data.num,
+            CaseInsensitiveSet() if self._ssn_data.has_star else self._ssn_data.members,
+            sync_confirmed,
+            active)
+    
+
+    def current_state_with_remote_sync(self, cluster: Cluster) -> _SyncState:
+        """Find the best candidates to be the synchronous standbys.
+
+        Current synchronous standby is always preferred, unless it has disconnected or does not want to be a
+        synchronous standby any longer.
+
+        Standbys are selected based on values from the global configuration:
+
+            - ``maximum_lag_on_syncnode``: would help swapping unhealthy sync replica in case it stops
+              responding (or hung). Please set the value high enough, so it won't unnecessarily swap sync
+              standbys during high loads. Any value less or equal to ``0`` keeps the behavior backwards compatible.
+              Please note that it will also not swap sync standbys when all replicas are hung.
+
+            - ``synchronous_node_count``: controls how many nodes should be set as synchronous.
+
+        :param cluster: current cluster topology from DCS
+
+        :returns: current synchronous replication state as a :class:`_SyncState` object
+        """
+        self._handle_synchronous_standby_names_change()
+
+        replica_list = _ReplicaList(self._postgresql, cluster, True)
+        self._process_replica_readiness(cluster, replica_list)
+
+        active = CaseInsensitiveSet()
+        sync_confirmed = CaseInsensitiveSet()
+
+        sync_node_count = 1 
+        
+        sync_node_maxlag = global_config.maximum_lag_on_syncnode
+
+        # Separate local and remote replicas
+        # Local: sync_priority >= 0 (cluster members)
+        # Remote: sync_priority < 0 (standby cluster members)
+        local_replicas = [r for r in replica_list if r.sync_priority >= 0]
+        remote_replicas = [r for r in replica_list if r.sync_priority < 0]
+
+        # If there aren't enough remote replicas, block writes
+        if len(remote_replicas) < self.get_num_of_remote_sync_replicas():
+
+            # Set default_transaction_read_only to 'on' to disable all writes
+            self._postgresql.config._server_parameters['default_transaction_read_only'] = 'on'
+            self._postgresql.config.write_postgresql_conf()
+            self._postgresql.reload()
+            
+            return _SyncState(
+                self._ssn_data.sync_type,
+                self._ssn_data.num,
+                CaseInsensitiveSet() if self._ssn_data.has_star else self._ssn_data.members,
+                sync_confirmed,
+                active
+            )   
+            
+        # Re-enable writes when there are enough sync replicas
+        self._postgresql.config._server_parameters['default_transaction_read_only'] = 'off'
+        self._postgresql.config.write_postgresql_conf()
+        self._postgresql.reload()
+
+        # Select 1 from local cluster (prefer members without nofailover)
+        local_picked = CaseInsensitiveSet()
+
+        # Prefer members without nofailover tag. We are relying on the fact that sorts are guaranteed to be stable.
+        for replica in sorted(local_replicas, key=lambda x: x.nofailover):
+            if sync_node_maxlag <= 0 or replica_list.max_lsn - replica.lsn <= sync_node_maxlag:
+                if global_config.is_quorum_commit_mode:
+                    # We do not add nodes with `nofailover` enabled because that reduces availability.
+                    # We need to check LSN quorum only among nodes that are promotable because
+                    # there is a chance that a non-promotable node is ahead of a promotable one.
+                    if not replica.nofailover or len(local_picked) < sync_node_count:
+                        if replica.application_name in self._ready_replicas:
+                            sync_confirmed.add(replica.application_name)
+                        local_picked.add(replica.application_name)
+                        break
+                else:
+                    local_picked.add(replica.application_name)
+                    if replica.sync_state == 'sync' and replica.application_name in self._ready_replicas:
+                        sync_confirmed.add(replica.application_name)
+                        break
+
+
+        # Include remote cluster replicas
+        added = 0
+        for replica in remote_replicas:
+            if added >= self.get_num_of_remote_sync_replicas():
+                break
+            added += 1
+            if sync_node_maxlag <= 0 or replica_list.max_lsn - replica.lsn <= sync_node_maxlag:
+                if global_config.is_quorum_commit_mode:
+                    if replica.application_name in self._ready_replicas:
+                        sync_confirmed.add(replica.application_name)
+                    active.add(replica.application_name)
+                else:
+                    active.add(replica.application_name)
+                    if replica.sync_state == 'sync' and replica.application_name in self._ready_replicas:
+                        sync_confirmed.add(replica.application_name)
+
+        # Combine: 1 local + num_of_sync_remote remote
+        active = local_picked | active
 
         return _SyncState(
             self._ssn_data.sync_type,
@@ -529,3 +640,16 @@ END;$$""")
         :returns: True if domain-based sync is enabled in global configuration, False otherwise
         """
         return global_config.get('use_domain_sync') or False
+    
+    def should_use_remote_sync(self) -> bool:
+        """Determine if remote-based synchronous replication should be used.
+
+        :returns: True if remote-based sync is enabled in global configuration, False otherwise
+        """
+        return global_config.get('use_remote_sync') or False
+
+    def get_num_of_remote_sync_replicas(self) -> int:
+        """Get the number of required remote sync replicas.
+        :returns: the number of required remote sync replicas, or 0 
+        """
+        return global_config.get('num_of_remote_sync_replicas') or 0
