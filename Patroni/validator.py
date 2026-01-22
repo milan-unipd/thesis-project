@@ -1198,5 +1198,8 @@ schema = Schema({
             "sync_priority": IntValidator(min=0, expected_type=int, raise_assert=True),
         }),
         Optional("nostream"): bool
-    }
+    },
+
+    Optional("use_domain_sync"): bool,
+    Optional("domains"): dict
 })
