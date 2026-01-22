@@ -3,8 +3,7 @@ package gcl
 import config.ConfigHolder
 import global.GCLRaftClient
 import kotlinx.coroutines.*
-import local.*
-import org.apache.ratis.util.LifeCycle
+import local.EtcdClient
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import patroni.PatroniContainerManager
@@ -15,8 +14,8 @@ class GCL {
 
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
-    internal val loopWait = 10L //todo
-    internal val globalLeaderTTL = 2 * loopWait
+    internal val loopWait = ConfigHolder.config.loopWait!!.toLong()
+    internal val globalLeaderTTL = ConfigHolder.config.globalLeaderLockTTL
 
     internal val raftClient = GCLRaftClient(scope)
     internal val etcdClient by lazy { EtcdClient(scope) }

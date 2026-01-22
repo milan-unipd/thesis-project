@@ -1,0 +1,36 @@
+is_observer: true
+#loop_wait: 10
+#avg_failover_time: 10
+node_ip: 192.168.0.6
+port: 9091
+#
+#etcd:
+#  group_id: thesis-cluster
+#  endpoints:
+#    - host: http://192.168.0.4
+#      port: 2379
+#    - host: http://192.168.0.4
+#      port: 2380
+#    - host: http://192.168.0.4
+#      port: 2381
+#
+raft:
+  group_id: thesis-cluster
+  id: gcl-watcher1
+  root_storage: ./raft-data
+  initial_leader: gcl-dc2
+  peers:
+    - id: gcl-dc2
+      host: 192.168.0.6
+      port: 7500
+
+    - id: gcl-dc1
+      host: 192.168.0.4
+      port: 7500
+
+    - id: gcl-watcher1
+      host: 192.168.0.6
+      port: 9091
+#patroni:
+#  conf_file: ./patroni.yml
+#  container_name: patroni-node1

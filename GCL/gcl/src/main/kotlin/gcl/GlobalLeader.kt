@@ -1,7 +1,6 @@
 package gcl
 
 import config.ConfigHolder
-import kotlin.getOrElse
 
 internal suspend fun GCL.runAsGlobalLeader() {
     logger.info("Node ${ConfigHolder.config.etcd!!.id} is the global leader after acquiring the leader lock")
@@ -10,8 +9,9 @@ internal suspend fun GCL.runAsGlobalLeader() {
         ConfigHolder.config.nodeIP,
         7432
     )
-    if (!updateGlobalMasterInfo(newMasterInfo)) return
+    patroniContainerManager.stopPatroni()
     if (!updateLocalMasterInfo(newMasterInfo)) return
+    if (!updateGlobalMasterInfo(newMasterInfo)) return
 
     patroniContainerManager.runPatroniWithConfig(newMasterInfo)
 
