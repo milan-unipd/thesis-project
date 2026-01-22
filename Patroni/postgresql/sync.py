@@ -213,7 +213,7 @@ class _ReplicaList(List[_Replica]):
                    element in the list we take value of ``pg_current_wal_flush_lsn()``.
     """
 
-    def __init__(self, postgresql: 'Postgresql', cluster: Cluster) -> None:
+    def __init__(self, postgresql: 'Postgresql', cluster: Cluster, include_remote_replicas: bool = False) -> None:
         """Create :class:``_ReplicaList`` object.
 
         :param postgresql: reference to :class:``Postgresql`` object.
@@ -230,21 +230,40 @@ class _ReplicaList(List[_Replica]):
 
         members = CaseInsensitiveDict({m.name: m for m in cluster.members
                                        if m.is_running and not m.nosync and m.name.lower() != postgresql.name.lower()})
-        replication = CaseInsensitiveDict({row['application_name']: row for row in postgresql.pg_stat_replication()
-                                           if row[sort_col] is not None and row['application_name'] in members})
-        for row in replication.values():
-            member = members.get(row['application_name'])
+        
+        # Get all replication connections (not just cluster members)
+        all_replication = postgresql.pg_stat_replication()
+        
+        # Process local cluster members (existing logic)
+        local_replication = CaseInsensitiveDict({row['application_name']: row for row in all_replication
+                                                 if row[sort_col] is not None and row['application_name'] in members})
+        
 
+        for row in local_replication.values():
+            member = members.get(row['application_name'])
             # We want to consider only rows from ``pg_stat_replication` that:
             # 1. are known to be streaming (write/flush/replay LSN are not NULL).
             # 2. can be mapped to a ``Member`` of the ``Cluster``:
             #   a. ``Member`` doesn't have ``nosync`` tag set;
             #   b. PostgreSQL on the member is known to be running and accepting client connections.
             #   c. ``Member`` isn't supposed to stream from another standby (``replicatefrom`` tag).
-            if member and row[sort_col] is not None and not self._should_cascade(members, replication, member):
+            if member and row[sort_col] is not None and not self._should_cascade(members, local_replication, member):
                 self.append(_Replica(row['pid'], row['application_name'],
                                      row['sync_state'], row[sort_col],
                                      bool(member.nofailover), member.sync_priority))
+        
+        if include_remote_replicas:
+            # Process remote cluster members (standby clusters)
+            # These are connections NOT in the primary cluster's member list
+            for row in all_replication:
+                app_name = row['application_name']
+                if row[sort_col] is not None and app_name not in members:
+                    # Remote cluster member - include with default attributes
+                    # Use sync_priority = -1 to distinguish from local members
+                    self.append(_Replica(row['pid'], app_name,
+                                        row['sync_state'], row[sort_col],
+                                        False,  # nofailover: False by default for remote
+                                        -1))    # sync_priority: -1 to mark as remote
 
         # Prefer replicas with higher ``sync_priority`` value, in state ``sync``,
         # and higher values of ``write``/``flush``/``replay`` LSN.
