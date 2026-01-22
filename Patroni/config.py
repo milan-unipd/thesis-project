@@ -103,7 +103,9 @@ class Config(object):
                                                if v[0] is not None and p not in ('wal_keep_segments', 'wal_keep_size')})
         },
         'domains': dict(),
-        'use_domain_sync': False
+        'use_domain_sync': False,
+        'use_remote_sync': False,
+        'num_of_remote_sync_replicas': 0
     }
 
     def __init__(self, configfile: str,
@@ -467,6 +469,8 @@ class Config(object):
                     config[name] = deepcopy(value) if isinstance(value, dict) else {}
                 elif name == 'use_domain_sync':
                     config[name] = bool(value)
+                elif name == 'use_remote_sync':
+                    config[name] = bool(value)
                 else:
                     config[name] = int(value)
         return config
@@ -717,7 +721,7 @@ class Config(object):
                         config['postgresql'][name].update(self._process_postgresql_parameters(value, True))
                     elif name != 'use_slots':  # replication slots must be enabled/disabled globally
                         config['postgresql'][name] = deepcopy(value)
-            elif name not in config or name in ['watchdog']:
+            elif name not in config or name in ['watchdog','domains', 'use_domain_sync', 'use_remote_sync', 'num_of_remote_sync_replicas']:
                 config[name] = deepcopy(value) if value else {}
 
         # restapi server expects to get restapi.auth = 'username:password' and similarly for `ctl`

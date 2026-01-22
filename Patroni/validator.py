@@ -1200,6 +1200,9 @@ schema = Schema({
         Optional("nostream"): bool
     },
 
-    Optional("use_domain_sync"): bool,
+    AtMostOne("use_domain_sync", "use_remote_sync"): Case({
+        "use_domain_sync": bool,
+        "use_remote_sync": bool,
+    }),
     Optional("domains"): dict
 })
