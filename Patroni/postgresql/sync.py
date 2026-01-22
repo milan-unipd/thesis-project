@@ -379,6 +379,44 @@ END;$$""")
         sync_node_count = global_config.synchronous_node_count if self._postgresql.supports_multiple_sync else 1
         sync_node_maxlag = global_config.maximum_lag_on_syncnode
 
+        # Domain-based sync logic
+        if self.should_use_domain_sync():
+            
+            has_sync_replica_in_all_domains = False
+            domains = self.get_domains()
+            
+            # Check if each domain has at least one replica
+            domains_with_replicas = {
+                domain: any(node == replica.application_name for node in nodes for replica in replica_list)
+                for domain, nodes in domains.items()
+            }
+            
+            # True if every domain has at least one replica
+            has_sync_replica_in_all_domains = all(domains_with_replicas.values())
+                                          
+            # If any domain doesn't have a sync replica, block writes
+            if not has_sync_replica_in_all_domains:
+                
+                # Set default_transaction_read_only to 'on' to disable all writes
+                self._postgresql.config._server_parameters['default_transaction_read_only'] = 'on'
+                self._postgresql.config.write_postgresql_conf()
+                self._postgresql.reload()
+                
+                return _SyncState(
+                    self._ssn_data.sync_type,
+                    self._ssn_data.num,
+                    CaseInsensitiveSet() if self._ssn_data.has_star else self._ssn_data.members,
+                    sync_confirmed,
+                    active
+                )   
+            
+            # Re-enable writes when all domains have sync replicas
+            self._postgresql.config._server_parameters['default_transaction_read_only'] = 'off'
+            self._postgresql.config.write_postgresql_conf()
+            self._postgresql.reload()
+            num_domains = len(domains.keys())
+            sync_node_count = num_domains if sync_node_count < num_domains else sync_node_count
+
         # Prefer members without nofailover tag. We are relying on the fact that sorts are guaranteed to be stable.
         for replica in sorted(replica_list, key=lambda x: x.nofailover):
             if sync_node_maxlag <= 0 or replica_list.max_lsn - replica.lsn <= sync_node_maxlag:
@@ -445,3 +483,49 @@ END;$$""")
         # timeline == 0 -- indicates that this is the replica
         if self._postgresql.get_primary_timeline() > 0:
             self._handle_synchronous_standby_names_change()
+
+
+    def get_domains(self) -> dict:
+        """Get the current domains configuration from global configuration.
+
+        :returns: the domains dictionary mapping domain names to lists of patroni nodes
+        """
+        return global_config.get('domains') or {}
+
+    def get_nodes_for_domain(self, domain: str) -> list:
+        """Get the list of patroni nodes for a specific domain.
+
+        :param domain: the domain name to look up
+        :returns: list of patroni node names for the domain, or empty list if domain not found
+        """
+        domains = self.get_domains()
+        return domains.get(domain, [])
+
+    def get_domain_for_node(self, node_name: str) -> str:
+        """Find which domain a specific node belongs to.
+
+        :param node_name: the patroni node name to search for
+        :returns: the domain name if found, or empty string if not found
+        """
+        domains = self.get_domains()
+        for domain, nodes in domains.items():
+            if node_name in nodes:
+                return domain
+        return ""
+
+    def is_node_in_domain(self, node_name: str, domain: str) -> bool:
+        """Check if a specific node belongs to a specific domain.
+
+        :param node_name: the patroni node name to check
+        :param domain: the domain name to check
+        :returns: True if the node belongs to the domain, False otherwise
+        """
+        return node_name in self.get_nodes_for_domain(domain)
+    
+
+    def should_use_domain_sync(self) -> bool:
+        """Determine if domain-based synchronous replication should be used.
+
+        :returns: True if domain-based sync is enabled in global configuration, False otherwise
+        """
+        return global_config.get('use_domain_sync') or False
